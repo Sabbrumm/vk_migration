@@ -11,18 +11,6 @@ from classes import VKUserPC
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 " \
              "Safari/537.36 "
 
-
-class JsonSerializable:
-    @classmethod
-    def from_json(cls, json_data):
-        object_ = json.loads(json_data, object_hook=lambda d: cls(**d))
-        return object_
-
-    def to_json(self):
-        json_object = json.dumps(self.__dict__)
-        return json_object
-
-
 class AuthException(Exception):
     CAPTCHA_NEEDED = 'Captcha needed'
     REG_NEEDED = 'Registration needed'
@@ -233,9 +221,7 @@ class VKIDAuth:
             "referer": "https://id.vk.com/",
         })
         try:
-            print(resp.content)
             data = LegacyResponseHandle(resp.json()).data
-            print(data)
             self.access_token = data['access_token']
             self.next_step_url = data['next_step_url']
             resp2 = self.session.post(self.next_step_url)

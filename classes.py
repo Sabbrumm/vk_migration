@@ -1,11 +1,100 @@
-import json
 import time
-
 import requests
 import pickle
-
-import vk_api
 from requests.cookies import RequestsCookieJar
+from vk_api import VkApi, ApiHttpError, ApiError, CAPTCHA_ERROR_CODE, Captcha
+
+
+class VkApiMob(VkApi):
+    def method(self, method, values=None, captcha_sid=None, captcha_key=None,
+               raw=False):
+        """ Вызов метода API
+
+        :param method: название метода
+        :type method: str
+
+        :param values: параметры
+        :type values: dict
+
+        :param captcha_sid: id капчи
+        :type captcha_key: int or str
+
+        :param captcha_key: ответ капчи
+        :type captcha_key: str
+
+        :param raw: при False возвращает `response['response']`
+                    при True возвращает `response`
+                    (может понадобиться для метода execute для получения
+                    execute_errors)
+        :type raw: bool
+        """
+
+        values = values.copy() if values else {}
+
+        if 'v' not in values:
+            values['v'] = self.api_version
+
+        if 'https' not in values:
+            values['https'] = 1
+
+        if 'lang' not in values:
+            values['lang'] = 'en'
+
+        if self.token:
+            values['access_token'] = self.token['access_token']
+
+        if captcha_sid and captcha_key:
+            values['captcha_sid'] = captcha_sid
+            values['captcha_key'] = captcha_key
+
+        with self.lock:
+            # Ограничение 3 запроса в секунду
+            delay = self.RPS_DELAY - (time.time() - self.last_request)
+
+            if delay > 0:
+                time.sleep(delay)
+
+            response = self.http.post(
+                'https://api.vk.com/method/' + method,
+                values,
+                headers={'Cookie': ''}
+            )
+            self.last_request = time.time()
+
+        if response.ok:
+            response = response.json()
+        else:
+            error = ApiHttpError(self, method, values, raw, response)
+            response = self.http_handler(error)
+
+            if response is not None:
+                return response
+
+            raise error
+
+        if 'error' in response:
+            error = ApiError(self, method, values, raw, response['error'])
+
+            if error.code in self.error_handlers:
+                if error.code == CAPTCHA_ERROR_CODE:
+                    error = Captcha(
+                        self,
+                        error.error['captcha_sid'],
+                        self.method,
+                        (method,),
+                        {'values': values, 'raw': raw},
+                        error.error['captcha_img']
+                    )
+
+                response = self.error_handlers[error.code](error)
+
+                if response is not None:
+                    return response
+
+            raise error
+
+        return response if raw else response['response']
+
 
 class VKUserPC:
     def __init__(self, cookies:RequestsCookieJar, device_id:str, UA:str, access_token):
@@ -17,6 +106,8 @@ class VKUserPC:
         self.session.headers['User-Agent'] = UA
         self.access_token = access_token
 
+    def set_proxies(self, proxies:dict):
+        self.session.proxies = proxies
     def dumps(self):
         return pickle.dumps(self)
 
@@ -34,16 +125,23 @@ class VKUserMobile:
         self.token = token
         self.device_id = device_id
         self.UA = UA
-        self.api = vk_api.VkApi(token=self.token)
+        self.api = VkApiMob(token=self.token, api_version=self.__v)
         self.api.http.headers["User-Agent"] = self.UA
         self.api.http.headers["x-vk-android-client"] = "new"
+
+    def set_proxies(self, proxies:dict):
+        self.api.http.proxies = proxies
+
+    def set_new_token(self, access_token:str):
+        self.token = access_token
+        self.api.token['access_token'] = access_token
 
     def dumps(self):
         return pickle.dumps(self)
 
     @classmethod
     def loads(cls, pickle_data:bytes):
-        object_:VKUserPC = pickle.loads(pickle_data)
+        object_:VKUserMobile = pickle.loads(pickle_data)
         return object_
 
     def get_user_info(self):
@@ -149,9 +247,7 @@ class VKUserMobile:
                       "bdate_visibility,"
                       "is_nft",
             "androidModel": "SM-A226B",
-            "v": "5.185", #TODO Важно, токен сломанный, версия выше 5.185 не заведётся, 5.210 не юзать!
-            "lang": "ru",
-            "https": 1,
+            "v": "5.185"                       # Важно, токен сломанный, версия выше 5.185 не заведётся, 5.210 не юзать!
         })
         return user_info
 
@@ -170,26 +266,26 @@ class VKUserMobile:
             "api_id": self.__app_id,
             "client_id": self.__app_id,
             "device_id": self.device_id,
-            "scope": "all", #TODO offline не ставить, ловишь bad client
+            "scope": "all",                                             # offline не ставить, ловишь bad client
             "sak_version": "1.108",
-            "password": password #TODO пиздец
+            "password": password                                        # пиздец
         }
         oauth_blank = self.api.http.post(
             "https://api.vk.com/oauth/auth_by_exchange_token",
             params,
             allow_redirects=True
         )
-        print(oauth_blank.content)
         k_vs = oauth_blank.url.removeprefix('https://oauth.vk.com/blank.html#').split('&')
         response_params: dict = {k_v.split('=')[0]: k_v.split('=')[1] for k_v in k_vs}
         return response_params
 
-    def refresh_broken_token(self, password) -> dict:
-        exchange_token = self.get_exchange_token()
+    def exchange_password_refresh(self, password, exchange_token=None) -> dict:
+        exchange_token = exchange_token if exchange_token else self.get_exchange_token()
         refreshed_params = self._non_legacy_token_refresh(exchange_token, password)
         return refreshed_params
 
-    def refresh_tokens(self, exchange_token):
+    def exchange_free_refresh(self, exchange_token=None):
+        exchange_token = exchange_token if exchange_token else self.get_exchange_token()
         '''
             Валидное токенов по эксченжу
         '''
@@ -209,12 +305,3 @@ class VKUserMobile:
         }
         response = self.api.http.post(f"https://api.vk.com/method/{method_name}", params)
         return response.json()['response']
-
-
-if __name__ == "__main__":
-    us = VKUserMobile(
-        "vk1.a.QxGPUpvdrJeVvA54dz3XXCSObhf3tJHwPo6aeiStdAUNwsGphI7r0tqfoonxPNDowcv87ptwRrGAGmlwgWCdcW9nhn-DUtB_c5fTZ7cXD1Yppdbas5oLWFCAKZdM-eRQ3mfZgEmpyzP-d5bg-9ueKqrrPr-MgVP79ZdSOy2newi7_TQeHOLVrocsN_iLMjqa",
-        "VKAndroidApp/8.11-15060 (Android 9; SDK 28; arm64-v8a; Redmi Note 11 Pro; ru; 1920x1080)",
-        "5e555f65a9a1b305"
-    )
-    us.method_info()

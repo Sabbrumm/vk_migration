@@ -109,10 +109,8 @@ class TokenReceiver:
                 else:
                     raise TokenException(TokenException.TWOFA_REQ, dec)
             if 'error' in dec and dec['error'] == 'need_captcha':
-                print(f'GotCaptcha Error')
                 try:
                     captcha_sid = dec['captcha_sid']
-                    # captcha_key = captcha_handler_str(dec['captcha_img'])
                     continue
                 except:
                     raise TokenException(TokenException.CAPTCHA_NEEDED, dec)
@@ -122,8 +120,7 @@ class TokenReceiver:
                         try:
                             self._auth_code = self._user_talk.handle_twofa(valid_sid, previous_wrong=1,
                                                                            phone_mask=phone_mask)
-                        except Exception as uu:
-                            print(uu)
+                        except Exception:
                             raise TokenException(TokenException.NO_ANSWER, {'error': 'reg_failed_wait'})
 
                         continue
@@ -143,7 +140,6 @@ class TokenReceiver:
                               ('receipt', receipt),
                               ('v', '5.210'),
                           ]).json()
-        print(dec)
         new_token = dec['response']['token']
         if new_token == token:
             raise TokenException(TokenException.TOKEN_NOT_REFRESHED)
