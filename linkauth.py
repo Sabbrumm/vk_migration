@@ -133,5 +133,5 @@ class LinkAuth:
 
                     if data['response']['status'] == 2:
                         return data['response']
-
+                    print('checking')
                     time.sleep(3)

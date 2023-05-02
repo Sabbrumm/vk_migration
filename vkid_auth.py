@@ -233,12 +233,15 @@ class VKIDAuth:
             "referer": "https://id.vk.com/",
         })
         try:
+            print(resp.content)
             data = LegacyResponseHandle(resp.json()).data
+            print(data)
             self.access_token = data['access_token']
             self.next_step_url = data['next_step_url']
             resp2 = self.session.post(self.next_step_url)
             if "vk.com/feed" in resp2.url:
-                return VKUserPC(self.session.cookies, self.device_id, self.session.headers['User-Agent'])
+                return VKUserPC(self.session.cookies, self.device_id, self.session.headers['User-Agent'],
+                                self.access_token)
             else:
                 raise AuthException(AuthException.LEGACY_BAD_REQUEST, resp2.json())
         except AuthException:

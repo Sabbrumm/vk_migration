@@ -1,3 +1,4 @@
+import json
 import time
 
 import requests
@@ -7,13 +8,14 @@ import vk_api
 from requests.cookies import RequestsCookieJar
 
 class VKUserPC:
-    def __init__(self, cookies:RequestsCookieJar, device_id:str, UA:str):
+    def __init__(self, cookies:RequestsCookieJar, device_id:str, UA:str, access_token):
         self.cookies = cookies
         self.session = requests.session()
         self.session.cookies = cookies
         self.device_id = device_id
         self.UA = UA
         self.session.headers['User-Agent'] = UA
+        self.access_token = access_token
 
     def dumps(self):
         return pickle.dumps(self)
@@ -23,11 +25,18 @@ class VKUserPC:
         object_:VKUserPC = pickle.loads(pickle_data)
         return object_
 
+
 class VKUserMobile:
-    def __init__(self, token:str, device_id:str, UA:str):
+    __v = "5.210"
+    __app_id = 2274003
+
+    def __init__(self, token: str, device_id: str, UA: str):
         self.token = token
         self.device_id = device_id
         self.UA = UA
+        self.api = vk_api.VkApi(token=self.token)
+        self.api.http.headers["User-Agent"] = self.UA
+        self.api.http.headers["x-vk-android-client"] = "new"
 
     def dumps(self):
         return pickle.dumps(self)
@@ -37,15 +46,12 @@ class VKUserMobile:
         object_:VKUserPC = pickle.loads(pickle_data)
         return object_
 
-    def method_info(self):
-        us = vk_api.VkApi(token=self.token)
-        us.http.headers["User-Agent"] = self.UA
-        user_info = us.method('users.get', {})
-        user_info = us.method('execute.getUserInfo', {
+    def get_user_info(self):
+        user_info = self.api.method('execute.getUserInfo', {
             "androidManufacturer": "Google",
             "wide": "0",
             "device_id": self.device_id,
-            "visible_time": int(time.time() * 1000),
+            "visible_time": int(time.time()),
             "func_v": "30",
             "info_fields": "audio_ads,"
                            "audio_background_limit,"
@@ -143,12 +149,66 @@ class VKUserMobile:
                       "bdate_visibility,"
                       "is_nft",
             "androidModel": "SM-A226B",
-            "v": "5.210",
+            "v": "5.185", #TODO Важно, токен сломанный, версия выше 5.185 не заведётся, 5.210 не юзать!
             "lang": "ru",
             "https": 1,
         })
+        return user_info
 
-        print(user_info)
+    def get_exchange_token(self):
+        return self.get_user_info()["exchange_token"]
+
+    def _non_legacy_token_refresh(self, exchange_token, password):
+        '''
+        Обычные обновления эксченжа через этот метод делать НЕЛЬЗЯ из-за возможных блокировок!
+        Для обычных обновлений токена юзается новый метод auth.refreshTokens
+        Этот метод использовался в приложении как авторизация эксченжа при выходе из аккаунта, не для его обновления
+        '''
+        params: dict = {
+            "exchange_token": exchange_token,
+            "v": self.__v,
+            "api_id": self.__app_id,
+            "client_id": self.__app_id,
+            "device_id": self.device_id,
+            "scope": "all", #TODO offline не ставить, ловишь bad client
+            "sak_version": "1.108",
+            "password": password #TODO пиздец
+        }
+        oauth_blank = self.api.http.post(
+            "https://api.vk.com/oauth/auth_by_exchange_token",
+            params,
+            allow_redirects=True
+        )
+        print(oauth_blank.content)
+        k_vs = oauth_blank.url.removeprefix('https://oauth.vk.com/blank.html#').split('&')
+        response_params: dict = {k_v.split('=')[0]: k_v.split('=')[1] for k_v in k_vs}
+        return response_params
+
+    def refresh_broken_token(self, password) -> dict:
+        exchange_token = self.get_exchange_token()
+        refreshed_params = self._non_legacy_token_refresh(exchange_token, password)
+        return refreshed_params
+
+    def refresh_tokens(self, exchange_token):
+        '''
+            Валидное токенов по эксченжу
+        '''
+        method_name = "auth.refreshTokens"
+        params = {
+            "exchange_tokens": exchange_token,
+            "device_id": self.device_id,
+            "scope": "all",
+            "initiator": "expired_token",
+            "active_index": "0",
+            "client_secret": "hHbZxrka2uZ6jB1inYsH",
+            "lang": "en",
+            "client_id": self.__app_id,
+            "api_id": self.__app_id,
+            "v": self.__v,
+            "https": 1
+        }
+        response = self.api.http.post(f"https://api.vk.com/method/{method_name}", params)
+        return response.json()['response']
 
 
 if __name__ == "__main__":
